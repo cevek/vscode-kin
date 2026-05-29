@@ -1,0 +1,156 @@
+{
+    "name": "namer",
+    "displayName": "namer — kinship prefixes",
+    "description": "Renders lib./api./my./near./far. inlay prefixes on imported symbols so you can tell their origin at the callsite without scrolling up to imports.",
+    "publisher": "amiro-internal",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Visualization",
+        "Other"
+    ],
+    "activationEvents": [
+        "onLanguage:typescript",
+        "onLanguage:typescriptreact"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "namer.refresh",
+                "title": "Namer: Refresh decorations"
+            },
+            {
+                "command": "namer.reloadProjectConfig",
+                "title": "Namer: Reload project config"
+            },
+            {
+                "command": "namer.restart",
+                "title": "Namer: Restart"
+            }
+        ],
+        "configuration": {
+            "title": "namer",
+            "properties": {
+                "namer.prefixes": {
+                    "type": "object",
+                    "description": "Prefix string per kinship class.",
+                    "default": {
+                        "shared": "lib.",
+                        "api": "api.",
+                        "own": "my.",
+                        "neighbor": "near.",
+                        "foreign": "far."
+                    },
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "namer.reactPackages": {
+                    "type": "array",
+                    "description": "Regex patterns of node_modules imports that should NOT be decorated (React core etc.).",
+                    "items": {"type": "string"},
+                    "default": ["^react$", "^react/", "^react-dom($|/)"]
+                },
+                "namer.showExternalPackagePrefix": {
+                    "type": "boolean",
+                    "description": "If true, bare node_modules specifiers get a prefix derived from package name (e.g. `react-query.useQuery`). If false, no prefix.",
+                    "default": true
+                },
+                "namer.aliases.shadcn": {
+                    "type": "array",
+                    "description": "Regex patterns matched against import path → shadcn class.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "^@ui/",
+                        "^@/components/ui/"
+                    ]
+                },
+                "namer.aliases.shared": {
+                    "type": "array",
+                    "description": "Regex patterns → shared class (lib).",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "^@shared/",
+                        "^@lib/",
+                        "^@stores/",
+                        "^@i18n(/|$)",
+                        "^@/components/(?!ui/)",
+                        "^@/lib/",
+                        "^@/stores/",
+                        "^@/i18n"
+                    ]
+                },
+                "namer.aliases.api": {
+                    "type": "array",
+                    "description": "Regex patterns → api class.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "^@api/",
+                        "^@/api/"
+                    ]
+                },
+                "namer.aliases.domain": {
+                    "type": "array",
+                    "description": "Regex patterns → domain alias. Capture group 1 = domain name, group 2 = headline (optional).",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "^@domain/([^/]+)(?:/([^/]+))?",
+                        "^@/features/([^/]+)(?:/([^/]+))?"
+                    ]
+                },
+                "namer.domainRoot": {
+                    "type": "string",
+                    "description": "Folder name (relative to /src) that marks the domains root. Used to derive 'myDomain' and 'myHeadline' from the current file path.",
+                    "default": "domains"
+                },
+                "namer.languages": {
+                    "type": "array",
+                    "description": "VS Code language IDs the plugin activates on.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "typescript",
+                        "typescriptreact"
+                    ]
+                },
+                "namer.opacity": {
+                    "type": "string",
+                    "description": "CSS opacity for the rendered prefix (0…1).",
+                    "default": "0.55"
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src",
+        "test": "vscode-test",
+        "package": "vsce package --allow-missing-repository --skip-license"
+    },
+    "devDependencies": {
+        "@types/mocha": "^10.0.10",
+        "@types/node": "22.x",
+        "@types/vscode": "^1.85.0",
+        "@vscode/test-cli": "^0.0.12",
+        "@vscode/test-electron": "^2.5.2",
+        "@vscode/vsce": "^3.9.1",
+        "eslint": "^9.39.1",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.48.1"
+    }
+}
