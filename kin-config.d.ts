@@ -1,4 +1,4 @@
-// Type hints for namer.config.{js,cjs}. Reference with JSDoc:
+// Type hints for namer.config.{cjs,js,json}. Reference with JSDoc:
 //   /** @type {import('./namer-config').NamerConfig} */
 //   module.exports = { ... };
 
@@ -13,52 +13,55 @@ export interface ClassifyArgs {
     name: string;
 }
 
+export type Pattern = RegExp | string;
+
 /**
  * Declarative matcher.
- *   - `path` (required) is tested against importPath
- *   - `name` (optional) is tested against the symbol name.
- *     Use lookahead for negatives: /^(?!Button$|Alert$)/
+ *   - `path` is tested against importPath.
+ *   - `onlyNames` (OR): name must match at least one. Omit to accept any name.
+ *   - `excludeNames` (AND of NOTs): name must not match any.
  */
 export interface MatchSpec {
-    path: RegExp | string;
-    name?: RegExp | string;
+    path: Pattern;
+    onlyNames?: Pattern[];
+    excludeNames?: Pattern[];
 }
 
 /**
  * A matcher item:
  *   - RegExp / string      — tested against importPath
  *   - (args) => boolean    — full control
- *   - { path, name? }      — declarative path + optional name filter
+ *   - { path, onlyNames?, excludeNames? }
  */
 export type Matcher =
-    | RegExp
-    | string
+    | Pattern
     | ((args: ClassifyArgs) => boolean)
     | MatchSpec;
+
+export interface Rule {
+    prefix: string;
+    /** OR across items. */
+    match: Matcher[];
+    /** Top-level OR: name must match at least one. */
+    onlyNames?: Pattern[];
+    /** Top-level AND of NOTs: name must not match any. */
+    excludeNames?: Pattern[];
+}
 
 export interface NamerConfig {
     packages?: {
         /** Don't decorate these imports. */
         ignore?: Matcher[];
-        /** Replace the auto-derived `<pkg>.` prefix with a custom one. */
+        /** Replace the auto-derived `<pkg>.` prefix. */
         rename?: Array<[Matcher, string]>;
         /** When true (default), unmatched bare specifiers render as `<packageName>.`. */
         autoPrefix?: boolean;
     };
 
     /** Static rules — checked in order, first match wins. `prefix: ''` = skip. */
-    rules?: Array<{
-        prefix: string;
-        match: Matcher[];
-    }>;
+    rules?: Rule[];
 
-    /**
-     * Custom classifier. Called BEFORE rules. Per-symbol. Return:
-     *   string    — use as prefix
-     *   ''        — skip decoration
-     *   null      — skip decoration
-     *   undefined — fall through to rules
-     */
+    /** Custom classifier (per symbol). Called BEFORE rules. */
     classify?: (args: ClassifyArgs) => string | null | undefined;
 
     languages?: string[];

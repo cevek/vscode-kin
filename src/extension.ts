@@ -1,33 +1,13 @@
-// namer — kinship prefixes for imported symbols.
+// kin — kinship prefixes for imported symbols.
 //
-// All classification rules live in a per-project config:
-//   namer.config.js | namer.config.cjs | namer.config.json (at workspace root)
+// All classification rules live in a per-project config at workspace root:
+//   kin.config.cjs | kin.config.js | kin.config.json
 //
-// Schema (see namer-config.d.ts):
-//   {
-//     packages: {
-//       ignore: [RegExp, ...],
-//       rename: [[RegExp, 'prefix'], ...],
-//     },
-//     rules: [{prefix: 'lib.', match: [RegExp, ...]}, ...],
-//     domain: {
-//       root: 'domains' | 'features',
-//       alias: [RegExp /* capture 1 = domain, capture 2 = headline */, ...],
-//       prefixes: {own, neighbor, foreign},
-//     },
-//     classify({importPath, callsiteFile, myDomain, myHeadline}): string | null | undefined,
-//     languages, opacity, showExternalPackagePrefix,
-//   }
-//
-// Resolution order:
-//   1. config.classify()                        — escape hatch
-//   2. config.rules[]                           — first-match-wins by prefix
-//   3. config.domain.alias[] (capture 1,2)      — same/other domain & headline
-//   4. relative ./ → resolve absolute path      — same domain semantics
-//   5. bare specifier:
-//        a. packages.ignore[]                   — skip
-//        b. packages.rename[]                   — apply renamed prefix
-//        c. fallback                            — packageName + '.'
+// See kin-config.d.ts for the full schema. Resolution order:
+//   1. config.classify()                  — escape hatch (per symbol)
+//   2. config.rules[]                     — first-match-wins
+//   3. packages.ignore / rename / autoPrefix
+//   4. null — no decoration
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -51,15 +31,26 @@ interface ClassifyArgs {
 interface MatchSpec {
     /** Required. Tested against `importPath`. */
     path: RegExp;
-    /** Optional. Tested against the symbol `name`. Use lookahead for negatives: `/^(?!Foo$|Bar$)/`. */
-    name?: RegExp;
+    /** OR: name must match at least one. If omitted, names aren't constrained. */
+    onlyNames?: RegExp[];
+    /** AND of NOTs: name must not match any of these. */
+    excludeNames?: RegExp[];
 }
 
 /** A matcher item. */
 type Matcher =
     | RegExp                                       // tested against importPath
     | ((a: ClassifyArgs) => boolean)               // full control
-    | MatchSpec;                                    // declarative path + optional name
+    | MatchSpec;                                    // declarative path + name filters
+
+interface Rule {
+    prefix: string;
+    match: Matcher[];
+    /** Top-level OR: name must match at least one. */
+    onlyNames?: RegExp[];
+    /** Top-level AND of NOTs: name must not match any. */
+    excludeNames?: RegExp[];
+}
 
 interface Config {
     packages: {
@@ -68,7 +59,7 @@ interface Config {
         /** When true, unmatched bare specifiers render as `<packageName>.`. */
         autoPrefix: boolean;
     };
-    rules: Array<{prefix: string; match: Matcher[]}>;
+    rules: Rule[];
     classify?: (a: ClassifyArgs) => string | null | undefined;
     languages: string[];
     opacity: string;
@@ -96,12 +87,18 @@ function builtinDefaults(): Config {
 // ───────────────────────────────────────────────────────────────────────────
 
 // .cjs first — works even when package.json has "type": "module".
-const CONFIG_FILENAMES = ['namer.config.cjs', 'namer.config.js', 'namer.config.json'];
+const CONFIG_FILENAMES = ['kin.config.cjs', 'kin.config.js', 'kin.config.json'];
 
 function toRegex(v: unknown): RegExp {
     if (v instanceof RegExp) return v;
     if (typeof v === 'string') return new RegExp(v);
-    throw new Error(`namer: expected RegExp or string, got ${typeof v}`);
+    throw new Error(`kin: expected RegExp or string, got ${typeof v}`);
+}
+
+function toPatternArray(v: unknown): RegExp[] | undefined {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) throw new Error('kin: expected array of RegExp/string');
+    return v.map(toRegex);
 }
 
 function toMatcher(v: unknown): Matcher {
@@ -109,25 +106,36 @@ function toMatcher(v: unknown): Matcher {
     if (typeof v === 'string') return new RegExp(v);
     if (typeof v === 'function') return v as Matcher;
     if (v && typeof v === 'object' && 'path' in (v as object)) {
-        const o = v as {path: unknown; name?: unknown};
+        const o = v as {path: unknown; onlyNames?: unknown; excludeNames?: unknown};
         return {
             path: toRegex(o.path),
-            name: o.name === undefined ? undefined : toRegex(o.name),
+            onlyNames: toPatternArray(o.onlyNames),
+            excludeNames: toPatternArray(o.excludeNames),
         };
     }
-    throw new Error('namer: matcher must be RegExp | string | function | {path, name?}');
+    throw new Error('kin: matcher must be RegExp | string | function | {path, onlyNames?, excludeNames?}');
+}
+
+function passesNameFilters(name: string, only?: RegExp[], exclude?: RegExp[]): boolean {
+    if (only && !only.some((re) => re.test(name))) return false;
+    if (exclude && exclude.some((re) => re.test(name))) return false;
+    return true;
 }
 
 function testMatcher(m: Matcher, args: ClassifyArgs): boolean {
     if (typeof m === 'function') {
         try { return Boolean(m(args)); }
-        catch (e) { console.error('namer: matcher fn threw', e); return false; }
+        catch (e) { console.error('kin: matcher fn threw', e); return false; }
     }
     if (m instanceof RegExp) return m.test(args.importPath);
     // MatchSpec
     if (!m.path.test(args.importPath)) return false;
-    if (m.name && !m.name.test(args.name)) return false;
-    return true;
+    return passesNameFilters(args.name, m.onlyNames, m.excludeNames);
+}
+
+function ruleApplies(rule: Rule, args: ClassifyArgs): boolean {
+    if (!rule.match.some((m) => testMatcher(m, args))) return false;
+    return passesNameFilters(args.name, rule.onlyNames, rule.excludeNames);
 }
 
 function normalize(raw: any): Partial<Config> {
@@ -144,6 +152,8 @@ function normalize(raw: any): Partial<Config> {
         out.rules = raw.rules.map((r: any) => ({
             prefix: String(r.prefix ?? ''),
             match: (r.match ?? []).map(toMatcher),
+            onlyNames: toPatternArray(r.onlyNames),
+            excludeNames: toPatternArray(r.excludeNames),
         }));
     }
     if (typeof raw.classify === 'function') out.classify = raw.classify;
@@ -174,7 +184,7 @@ function loadProjectConfig(folder: string): LoadedConfig | null {
             }
             if (!raw || typeof raw !== 'object' || Object.keys(raw).length === 0) {
                 vscode.window.showWarningMessage(
-                    `namer: ${file} loaded as empty/undefined. If your package.json has "type": "module", rename the file to namer.config.cjs.`,
+                    `kin: ${file} loaded as empty/undefined. If your package.json has "type": "module", rename the file to kin.config.cjs.`,
                 );
                 continue;
             }
@@ -182,9 +192,9 @@ function loadProjectConfig(folder: string): LoadedConfig | null {
         } catch (e) {
             const msg = (e as Error).message;
             const hint = msg.includes('ERR_REQUIRE_ESM') || msg.includes('module')
-                ? ` Hint: rename to namer.config.cjs (your package.json may have "type": "module").`
+                ? ` Hint: rename to kin.config.cjs (your package.json may have "type": "module").`
                 : '';
-            vscode.window.showErrorMessage(`namer: failed to load ${file}: ${msg}${hint}`);
+            vscode.window.showErrorMessage(`kin: failed to load ${file}: ${msg}${hint}`);
             continue;
         }
     }
@@ -193,19 +203,20 @@ function loadProjectConfig(folder: string): LoadedConfig | null {
 
 const configByFolder = new Map<string, LoadedConfig | null>();
 
-function configForFile(filePath: string): Config {
+/** Returns Config when a project config exists, or null when the extension should stay silent. */
+function configForFile(filePath: string): Config | null {
     const uri = vscode.Uri.file(filePath);
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     const folderPath = folder?.uri.fsPath;
+    if (!folderPath) return null;
 
-    let override: Partial<Config> = {};
-    if (folderPath) {
-        if (!configByFolder.has(folderPath)) {
-            configByFolder.set(folderPath, loadProjectConfig(folderPath));
-        }
-        override = configByFolder.get(folderPath)?.config ?? {};
+    if (!configByFolder.has(folderPath)) {
+        configByFolder.set(folderPath, loadProjectConfig(folderPath));
     }
+    const loaded = configByFolder.get(folderPath);
+    if (!loaded) return null;                       // no kin.config.* → opt-out
 
+    const override = loaded.config;
     const base = builtinDefaults();
     return {
         packages: {
@@ -255,13 +266,13 @@ function getPrefix(importPath: string, callsiteFile: string, name: string, confi
             const r = config.classify(args);
             if (r !== undefined) return r || null;
         } catch (e) {
-            console.error('namer: classify() threw', e);
+            console.error('kin: classify() threw', e);
         }
     }
 
     // 2. rules — first match wins
     for (const rule of config.rules) {
-        if (rule.match.some((m) => testMatcher(m, args))) {
+        if (ruleApplies(rule, args)) {
             return rule.prefix || null;
         }
     }
@@ -338,7 +349,8 @@ function disposeAllDecorations() {
 function refresh(editor: vscode.TextEditor) {
     const config = configForFile(editor.document.fileName);
 
-    if (!config.languages.includes(editor.document.languageId)) {
+    // No project config → stay silent. Also clear any leftovers from a prior config.
+    if (!config || !config.languages.includes(editor.document.languageId)) {
         for (const d of decoCache.values()) editor.setDecorations(d, []);
         return;
     }
@@ -402,7 +414,7 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     refreshAll();
 
-    const watcher = vscode.workspace.createFileSystemWatcher('**/namer.config.{js,cjs,json}');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/kin.config.{js,cjs,json}');
     watcher.onDidCreate(reloadConfigs);
     watcher.onDidChange(reloadConfigs);
     watcher.onDidDelete(reloadConfigs);
@@ -416,9 +428,9 @@ export function activate(ctx: vscode.ExtensionContext) {
                 if (ed.document === e.document) refresh(ed);
             }
         }),
-        vscode.commands.registerCommand('namer.refresh', refreshAll),
-        vscode.commands.registerCommand('namer.reloadProjectConfig', reloadConfigs),
-        vscode.commands.registerCommand('namer.restart', reloadConfigs),
+        vscode.commands.registerCommand('kin.refresh', refreshAll),
+        vscode.commands.registerCommand('kin.reloadProjectConfig', reloadConfigs),
+        vscode.commands.registerCommand('kin.restart', reloadConfigs),
         {dispose: disposeAllDecorations},
     );
 }
